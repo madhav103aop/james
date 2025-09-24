@@ -12,7 +12,7 @@
       display: flex;
       height: 100vh;
       overflow: hidden;
-      width:100%;
+      width: 100%;
     }
 
     #sidebar {
@@ -49,57 +49,50 @@
     h2 {
       margin-top: 0;
     }
+    #storeSelect {
+        display: none;      /* Hide dropdown */
+      }
 
     /* --- Responsive CSS --- */
+    @media (max-width: 768px) {
+      body {
+        display: flex;
+        flex-direction: column; /* stack sidebar on top */
+        height: 100vh;
+        margin: 0;
+      }
 
-  /* Hide the dropdown by default (desktop view) */
-  #storeSelect {
-    display: none;
-  }
-
-  /* Media query for Mobile View */
-  @media (max-width: 768px) {
-
-    body{
-      display: inline-block;
-    }
-    
-
-    #sidebar {
-      width: 100%; /* Sidebar takes full width */
-      height: fit-content; /* Sidebar height adjusts to content */
-      padding: 10px; /* Adjust padding for smaller screens */
-      box-shadow: 0 2px 5px rgba(0,0,0,0.1); /* Adjust shadow for bottom */
-      overflow-y: visible; /* Allow scrolling if needed, but for small content, visible is fine */
-    }
-
-    #searchInput,
-    #storeList {
-      display: none; /* Hide search box and store list on mobile */
-    }
-
-    #storeSelect {
-      display: block; /* Show dropdown on mobile */
-      width:95%;
-      position: relative;
-      z-index:9999;
-    }
-
-    #map {
-      height: 100vh; /* Map takes remaining vertical space */
-    }
-  }
-
-  /* Adjustments for even smaller screens if necessary, e.g., phones */
-  @media (max-width: 480px) {
       #sidebar {
-          padding: 8px; /* Slightly less padding for very small screens */
+        width: 100%;
+        max-height: 40vh;  /* Sidebar takes up part of screen */
+        overflow-y: auto;  /* Make sidebar scrollable */
+        box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+      }
+
+      #map {
+        flex: 1;            /* Map fills rest */
+        min-height: 60vh;   /* Ensure height */
+      }
+
+      #searchInput,
+      #storeList {
+        display: block;     /* Keep search + list visible */
+      }
+
+      #storeSelect {
+        display: none;      /* Hide dropdown */
+      }
+    }
+
+    @media (max-width: 480px) {
+      #sidebar {
+        padding: 8px;
       }
       #searchInput, #storeSelect {
-          font-size: 14px; /* Smaller font size for inputs */
-          padding: 8px;
+        font-size: 14px;
+        padding: 8px;
       }
-  }
+    }
   </style>
 </head>
 <body>
@@ -117,22 +110,37 @@
 
   <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
   <script>
-
+    // --- init map ---
     const map = L.map('map').setView([23.185884, 79.974380], 6);
-
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution: '© OpenStreetMap contributors'
     }).addTo(map);
 
-    let allMarkers = [];
-    let storeData = []; // This will hold the parsed CSV data
+    // --- storage structures ---
+    let allMarkers = [];          // array of markers (in CSV iteration order)
+    const markerMap = new Map();  // Map(csvIndex -> marker) => robust lookup
+    let storeData = [];          // array of store objects (with original CSV index)
+
+    // small helper to escape HTML for popup text (avoid accidental HTML injection)
+    function escapeHtml(str) {
+      if (!str && str !== 0) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    }
 
     function addMarker(name, address, city, lat, lng, index, contact) {
       const marker = L.marker([lat, lng]).addTo(map);
-      marker.bindPopup(`<strong>${name}</strong><br>${address}<br>${contact}`);
-      marker.meta = { name, address, city, index, contact }; // Store original data for easy lookup
+      const popupHtml = `<strong>${escapeHtml(name)}</strong><br>${escapeHtml(address)}<br>${escapeHtml(contact)}`;
+      marker.bindPopup(popupHtml);
+      // meta stored on marker for quick searching/filtering
+      marker.meta = { name, address, city, index, contact, lat, lng };
       allMarkers.push(marker);
-      return marker; // Return the marker so we can use it immediately if needed
+      markerMap.set(index, marker); // IMPORTANT: reliable mapping from CSV index -> marker
+      return marker;
     }
 
     function updateStoreList(filteredStores) {
@@ -149,11 +157,21 @@
         div.className = "store-item";
         div.textContent = `${toTitleCase(store.name)} (${toTitleCase(store.city)}), Contact - ${store.contact}`;
         div.addEventListener("click", () => {
-          // Find the marker using the store's index
-          const marker = allMarkers[store.index];
+          // lookup marker reliably by original CSV index via markerMap
+          const marker = markerMap.get(store.index);
           if (marker) {
+            map.invalidateSize();
             map.setView(marker.getLatLng(), 14);
             marker.openPopup();
+            // adjust so popup isn’t hidden under the UI
+            if (window.innerWidth > 768) {
+              map.panBy([120, 0], { animate: true });
+            } else {
+              map.panBy([0, -120], { animate: true });
+            }
+          } else {
+            // debug fallback (shouldn't happen) — uncomment to debug
+            // console.warn('Marker not found for index', store.index);
           }
         });
         listEl.appendChild(div);
@@ -162,127 +180,124 @@
 
     function populateStoreDropdown(stores) {
       const selectEl = document.getElementById('storeSelect');
-      selectEl.innerHTML = '<option value="">Select a Store</option>'; // Clear existing options and add default
+      selectEl.innerHTML = '<option value="">Select a Store</option>';
 
-      stores.forEach((store, index) => {
+      // Use original CSV index as option.value so we can map to markerMap
+      stores.forEach((store) => {
         const option = document.createElement('option');
-        option.value = index; // Use the original index to link to the marker
+        option.value = store.index;
         option.textContent = `${toTitleCase(store.name)} (${toTitleCase(store.city)})`;
         selectEl.appendChild(option);
       });
     }
 
     function filterStores(query) {
-      const lowerQuery = query.toLowerCase();
+      const lowerQuery = String(query || '').toLowerCase();
       let filteredStores = [];
 
+      // iterate marker list and test each marker.meta for a match
       allMarkers.forEach(marker => {
-        const store = marker.meta; // Access the original store data from marker.meta
+        const store = marker.meta;
         const match = store.name.toLowerCase().includes(lowerQuery) ||
                       store.address.toLowerCase().includes(lowerQuery) ||
                       store.city.toLowerCase().includes(lowerQuery);
 
         if (match) {
-          if (!map.hasLayer(marker)) {
-            marker.addTo(map);
-          }
-          filteredStores.push(store); // Push the original store data for sorting and list update
+          if (!map.hasLayer(marker)) marker.addTo(map);
+          filteredStores.push(store);
         } else {
-          if (map.hasLayer(marker)) {
-            map.removeLayer(marker);
-          }
+          if (map.hasLayer(marker)) map.removeLayer(marker);
         }
       });
 
-      // Sort the filtered stores by name
+      // sort by name for neat list display (store.index stays original CSV index)
       filteredStores.sort((a, b) => a.name.localeCompare(b.name));
-
-      // Update the store list (sidebar)
       updateStoreList(filteredStores);
 
-      // No need to update the dropdown based on search, it always shows all stores
-      // If you want the dropdown to also filter, we'd need more logic here.
-
-      // Zoom to bounds of visible markers
+      // Fit to visible markers (if any)
       const visibleMarkers = allMarkers.filter(marker => map.hasLayer(marker));
       if (visibleMarkers.length > 0) {
         const group = L.featureGroup(visibleMarkers);
         map.fitBounds(group.getBounds().pad(0.2));
       } else {
-        map.setView([23.185884, 79.974380], 6); // Reset view if no markers are visible
+        map.setView([23.185884, 79.974380], 6);
       }
     }
 
+    // search input
     document.getElementById('searchInput').addEventListener('input', e => {
       filterStores(e.target.value);
     });
 
+    // dropdown selection (if visible)
     document.getElementById('storeSelect').addEventListener('change', e => {
-      const selectedIndex = parseInt(e.target.value);
-      if (!isNaN(selectedIndex) && selectedIndex >= 0 && selectedIndex < allMarkers.length) {
-        const marker = allMarkers[selectedIndex];
-
-        // Fly to the selected marker's location and open its popup
-        map.flyTo(marker.getLatLng(), 16, { animate: true, duration: 1.5 }); // Adjust zoom level (e.g., 16, 17, 18) as needed
-        marker.openPopup();
-
-        // OPTIONAL: Clear the search input if you want
-        document.getElementById('searchInput').value = '';
-
-        // IMPORTANT: DO NOT call filterStores('') here if you want to keep the map focused
-        // on the single selected marker. If you call it, it will re-filter all markers
-        // and zoom out to fit them.
-
-        // If you want the sidebar list to also reset to "all stores" after selection
-        // WITHOUT affecting the map's zoom/view, you'd need a separate function
-        // that updates the list without calling map.fitBounds.
-        // For now, let's just remove the problematic line.
-
-        // If the sidebar list should *only* show the selected store, you'd modify updateStoreList
-        // to accept a single store or a specific filter after selection.
+      const originalIndex = parseInt(e.target.value, 10);
+      if (!isNaN(originalIndex)) {
+        const marker = markerMap.get(originalIndex);
+        if (marker) {
+          map.invalidateSize();
+          map.flyTo(marker.getLatLng(), 16, { animate: true, duration: 1.2 });
+          marker.openPopup();
+          if (window.innerWidth > 768) {
+            map.panBy([120, 0], { animate: true });
+          } else {
+            map.panBy([0, -120], { animate: true });
+          }
+        } else {
+          // console.warn('No marker for index', originalIndex);
+        }
       }
-      // Optional: Reset the dropdown to "Select a Store" after selection if you want.
-      // e.target.value = '';
     });
 
-    // Load CSV
+    // --- Load CSV and create markers ---
     fetch("https://docs.google.com/spreadsheets/d/e/2PACX-1vQhIU7lqfi5iHWY1kDwo57TyyHMEKa0tWctb2Hz1clBIlWzMaw3qJLuJ_AjBRHrb4ev2iS4P0FwhT2x/pub?output=csv")
       .then(res => res.text())
       .then(csv => {
         const data = Papa.parse(csv, { header: true }).data;
 
-        data.forEach((row, index) => {
-          // Adjust column names if they are different in your CSV
-          const name = row['Store Name'] || row['Name'] || row[0];
-          const address = row['Address'] || row[1];
-          const city = row['City'] || row[2];
+        data.forEach((row, csvIndex) => {
+          // adapt to whichever columns you have
+          const name = row['Store Name'] || row['Name'] || row[0] || '';
+          const address = row['Address'] || row[1] || '';
+          const city = row['City'] || row[2] || '';
           const lat = parseFloat(row['Latitude'] || row[3]);
           const lng = parseFloat(row['Longitude'] || row[4]);
-          const contact = row['Contact'] || row[5]; // Keep contact as string if it can contain non-numeric chars
+          const contact = row['Contact'] || row[5] || '';
 
           if (!isNaN(lat) && !isNaN(lng)) {
-            // Push the full store data, including the original index from the CSV iteration
-            storeData.push({ name, address, city, lat, lng, index, contact });
-            addMarker(name, address, city, lat, lng, index, contact);
+            // 1) add marker (map & internal structures)
+            addMarker(name, address, city, lat, lng, csvIndex, contact);
+
+            // 2) store data for lists/dropdown (index is original CSV index)
+            storeData.push({ name, address, city, lat, lng, index: csvIndex, contact });
           }
         });
 
-        // Sort the *initial* storeData by name before populating lists
+        // sort the displayed list alphabetically (store.index still points to original CSV row)
         storeData.sort((a, b) => a.name.localeCompare(b.name));
 
-        // Initial populate of dropdown and list
         populateStoreDropdown(storeData);
         updateStoreList(storeData);
+        // ensure Leaflet recalculates tile sizes
+        setTimeout(() => map.invalidateSize(), 300);
+      })
+      .catch(err => {
+        console.error('Failed to load CSV', err);
       });
 
     function toTitleCase(str) {
-      if (!str) return ''; // Handle null or undefined strings
+      if (!str) return '';
       return str
         .toLowerCase()
         .split(/[\s-_]+/)
         .map(word => word.charAt(0).toUpperCase() + word.slice(1))
         .join(' ');
     }
+
+    // keep map rendered correctly on resize
+    window.addEventListener("resize", () => {
+      map.invalidateSize();
+    });
   </script>
 </body>
 </html>
